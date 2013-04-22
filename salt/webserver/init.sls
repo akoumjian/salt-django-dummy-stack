@@ -1,6 +1,7 @@
 include:
   - app
 
+
 # Install and configure nginx
 nginx:
   pkg:
@@ -17,17 +18,32 @@ nginx:
       - service: nginx
 
 # Install and configure uwsgi
+uwsgi_upstart:
+  file.managed:
+    - name: /etc/init/uwsgi.conf
+    - source: salt://webserver/uwsgi.conf
+
+/etc/uwsgi/apps-enabled/myapp.ini:
+  file.managed:
+    - source: salt://webserver/myapp.ini
+    - watch_in:
+      - service: uwsgi
+
+/var/log/uwsgi:
+  file:
+    - directory
+
 uwsgi:
-  pkg:
+  pip:
     - installed
   service:
     - running
+    - require:
+      - pip: uwsgi
+      - file: uwsgi_upstart
+      - file: /etc/uwsgi/apps-enabled/myapp.ini
     - watch:
       - git: myapp
-      - file: /var/www/myapp/djang_project/settings_local.py
+      - file: settings_local
 
-/etc/uwsgi/apps-enabled/app:
-  file.managed:
-    - source: salt://webserver/myapp_uwsgi.ini
-    - watch_in:
-      - service: uwsgi
+

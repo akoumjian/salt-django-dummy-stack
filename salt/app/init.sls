@@ -8,6 +8,7 @@ app-pkgs:
   pkg.installed:
     - pkgs:
       - git
+      - python-pip
       - python-dev
 
 myapp:
@@ -20,13 +21,15 @@ myapp:
       - pkg: app-pkgs
       - file: deploy_keys
 
-/var/www/myapp/requirements.txt:
+myapp_requirements:
   pip.installed:
+    - requirements: /var/www/myapp/requirements.txt
     - require:
       - git: myapp
 
-/var/www/myapp/django_project/settings_local.py:
+settings_local:
   file.managed:
+    - name: /var/www/myapp/django_project/settings_local.py
     - source: salt://app/settings_local.py
     - require:
       - git: myapp
