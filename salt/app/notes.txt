@@ -1,0 +1,311 @@
+Django Deployment with Saltstack
+
+Deployment is deceptively hard (especially on a fresh box):
+* install all required packages & pip requirements
+    - (whoops, forgot python-dev again, didn't you?)
+* update our application via version control or tarballs
+* configs that vary per environment
+    - web servers
+    - process watchers
+    - celery, elasticsearch, whatever you use
+* restarting services in correct order
+* only performing actions when necessary
+    - restart service only if config changes,
+
+And More!
+* targeting machines with different roles (app server, db server, search server)
+* build process? (compressing static assets)
+* cancelling deployment if certain stages fail
+
+How does Saltstack Help?
+* Provides a sane way to _declare_ what your servers look like
+* Makes it easy to change configurations for different environments or deployments
+* Reporting on success / failure of deployment or other jobs
+
+What does it look like?
+
+Saltstack Architecture
+* standalone minion(s)
+``salt-call state.highstate``
+* master -> minions
+``salt 'match-string' state.highstate``
+
+Formulas
+- where we declare everything we want
+- just one or more files living in a specific directory
+- also contains any config files we want to deliver
+- anything else you may want to deliver via fileserver
+
+/srv/salt/webserver.sls
+- an example formula, notice extension
+- Three simple declarations
+
+```
+nginx: # <- name declaration, the default argument to the states below
+  pkg:
+    - installed # installed state of the pkg state module
+  service:
+    - running   # running state of the service state module
+
+# file.managed takes destination location as default arg
+/etc/nginx/sites-available/default: 
+  file.managed:
+    # managed can take a source file to place in our destination
+    - source: salt://nginx/default
+    # this is a requisite declaration
+    # makes sure any service state with name redis will watch 
+    # this file.managed for changes
+    - watch_in:
+        - service: nginx
+```
+
+Top File
+because you normally have multiple types of machines
+- Apply Formulas to Minions
+
+```
+# /srv/salt/top.sls
+base:
+  '*':
+    - webserver
+```
+- top.sls only special filename
+- base is our default file server directory ('/srv/salt')
+- * is glob, in this case we are saying all machines get webserver formula
+
+What does a Django Saltstack look like?
+- deploy application from git on github
+- using nginx & uwsgi
+
+Our Files
+
+/srv/salt/
+  top.sls
+  app/
+    init.sls
+    settings_local.py
+    github_rsa
+    github_rsa.pub
+  webserver/
+    init.sls
+    nginx_site.conf
+    myapp_uwsgi.ini
+
+- app/init.sls == app.sls, look familiar?
+
+
+# /srv/salt/top.sls
+base:
+  '*':
+    - webserver
+
+# /srv/salt/webserver/init.sls
+{% includes 'app' %}
+
+# Install and configure nginx
+nginx:
+  pkg:
+    - installed
+  service:
+    - running
+    - require:
+      - pkg: nginx
+
+/etc/nginx/sites-enabled/default:
+  file.managed:
+    - source: salt://webserver/nginx_site.conf
+    - watch_in:
+      - service: nginx
+
+# Install and configure uwsgi
+uwsgi:
+  pkg:
+    - installed
+  service:
+    - running
+    - watch:
+      - git: myapp
+      - file: /var/www/myapp/settings_local.py
+
+/etc/uwsgi/apps-enabled/app:
+  file.managed:
+    - source: salt://webserver/myapp_uwsgi.ini
+    - watch_in:
+      - service: uwsgi
+
+# /srv/salt/app/init.sls
+# in reality want to set up different users
+# may want to deploy in virtualenv
+
+# Configure git over ssh for deployment
+deploy_keys:
+  file.recurse:
+    - name: /root/.ssh/
+    - source: salt://app/keys
+    - file_mode: 600
+
+app-pkgs:
+  pkg.installed:
+    - pkgs:
+      - git
+      - python-dev
+      - libmysqlclient-dev
+
+myapp:
+  git.latest:
+    - name: git@github.com:orgname/myapp.git
+    - rev: master
+    - target: /var/www/myapp
+    - force: true
+    - require:
+      - pkg: app-pkgs
+      - file: deploy_keys
+
+/var/www/myapp/requirements.txt:
+  pip.installed:
+    - require:
+      - git: myapp
+
+That should be all our packages, files, and services. To deploy we use this command:
+(for standalone minions)
+sudo salt-call --local state.highstate
+
+If you had multiple minions you just need to target them:
+
+sudo salt '*' state.highstate
+
+- state.highstate is the will run all the state formulas that match your minion in the top.sls
+```
+# /srv/salt/top.sls
+base:
+  '*':
+    - webserver
+```
+In our case we apply the webserver formula, which itself includes the app formula
+
+
+Vary Deployment Based on Environments
+
+Introducing Pillar!
+
+Assign arbitrary data
+
+# /srv/pillar/dev.sls
+(Just yaml!)
+git_rev: develop
+
+Now we use this in our stack:
+
+# /srv/salt/webserver/init.sls
+
+...
+myapp:
+  git.latest:
+    - name: git@github.com:akoumjian/dummy_django_project.git
+    - rev: {{ pillar['git_rev'] }}
+    - target: /var/www/myapp
+    - force: true
+    - require:
+      - pkg: app-pkgs
+      - file: deploy_keys
+...
+
+Match the same way as Formulas:
+
+# /srv/pillar/top.sls
+
+base:
+  '*':
+    - dev
+
+But now we want a way to assign different values to different environments
+
+Filter data by minion attributes!
+
+One way uses glob matching on minion id's:
+
+base:
+  'dev.*':
+    - dev  # /srv/pillar/dev.sls
+  'prod.*':
+    - prod # /srv/pillar/prod.sls
+
+where you assigned a minion id to the minion starting with "dev." or "prod." when you booted it
+
+# /etc/salt/minion
+
+id: dev.colo5.foobar
+
+However I find this method not very flexible. In the minion config you can also set static grains.
+Grains are (relatively) static attributes of minions.
+
+# /etc/salt/minion
+
+id: [leave blank to use hostname]
+
+grains:
+  env: dev
+
+So now back in your pillar top file, we match it:
+
+# /srv/pillar/top.sls
+
+base:
+  'env:dev':
+    - match: grain
+    - dev
+  'env:prod':
+    - match: grain
+    - prod
+
+So now when we run state.highstate, our weberver/init.sls will run through the default jinja templating
+engine and insert the correct value into here:
+
+...
+myapp:
+  git.latest:
+    - name: git@github.com:akoumjian/dummy_django_project.git
+    - rev: {{ pillar['git_rev'] }}
+    - target: /var/www/myapp
+    - force: true
+    - require:
+      - pkg: app-pkgs
+      - file: deploy_keys
+...
+
+This is Django, so what about different settings.py?
+
+Let's replace the settings in our repo with custom settings for each environment. Here's how we place our custom file:
+
+settings:
+  file.managed:
+    - name: /var/www/myapp/django_project/settings.py
+    - source: salt://app/settings.py
+    - template: jinja  # render file through templating engine before placing on minion
+    - require:         # just make sure our app is pulled before placing file
+      - git: myapp
+
+
+# /srv/salt/app/settings.py
+
+...
+ALLOWED_HOSTS = {{ pillar['allowed_hosts'] }}
+...
+
+also a good place for database endpoints and credentials,
+but our demo app doesn't use a database
+
+# /srv/pillar/dev.sls
+
+git_rev: develop
+allowed_hosts: ['*']
+
+# /srv/pillar/prod.sls
+
+git_rev: master
+allowed_hosts: ['example.com']
+
+
+# Some other patterns
+- no clone for local dev on vm with shared folders
+

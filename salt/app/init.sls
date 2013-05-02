@@ -4,7 +4,7 @@ deploy_keys:
     - source: salt://app/keys
     - file_mode: 600
 
-app-pkgs:
+app_pkgs:
   pkg.installed:
     - pkgs:
       - git
@@ -14,11 +14,11 @@ app-pkgs:
 myapp:
   git.latest:
     - name: git@github.com:akoumjian/dummy_django_project.git
-    - rev: master
+    - rev: {{ pillar['git_rev'] }}
     - target: /var/www/myapp
     - force: true
     - require:
-      - pkg: app-pkgs
+      - pkg: app_pkgs
       - file: deploy_keys
 
 myapp_requirements:
@@ -27,9 +27,10 @@ myapp_requirements:
     - require:
       - git: myapp
 
-settings_local:
+settings:
   file.managed:
-    - name: /var/www/myapp/django_project/settings_local.py
+    - name: /var/www/myapp/django_project/settings.py
     - source: salt://app/settings_local.py
+    - template: jinja
     - require:
       - git: myapp

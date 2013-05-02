@@ -44,6 +44,6 @@ uwsgi:
       - file: /etc/uwsgi/apps-enabled/myapp.ini
     - watch:
       - git: myapp
-      - file: settings_local
+      - file: settings
 
 
